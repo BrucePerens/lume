@@ -1,0 +1,18 @@
+[server]
+bind_addr = "0.0.0.0:25"
+# You can now use string names like "lume" or "mail", or raw integer UIDs like 1000
+run_as_uid = "lume"
+run_as_gid = "lume"
+# Regex patterns for domains this MTA is authorized to receive mail for
+accepted_hosts = ["example\\.com$", ".*\\.hams\\.com$"]
+max_connections = 1000
+idle_timeout_secs = 30
+max_message_size_mb = 30
+
+[rspamd]
+check_url = "http://127.0.0.1:11333/checkv2"
+reject_spam = true
+
+[lume]
+data_dir = "/var/lib/lume/data"
+default_acl_id = 1
