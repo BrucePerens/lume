@@ -70,7 +70,7 @@ async fn store_mail(
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
 
     let header = crate::storage::MailHeader {
-        dict_id: state.engine.active_dict_version,
+        dict_id: state.engine.compression_manager.get_active_dict_id(),
         acl_id,
         original_checksum: 0,
         text_len: 0,

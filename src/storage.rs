@@ -60,7 +60,7 @@ impl crate::LumeEngine {
 
         // 5. Build Header
         let header = MailHeader {
-            dict_id: self.active_dict_version,
+            dict_id: self.compression_manager.get_active_dict_id(),
             acl_id,
             original_checksum,
             text_len,
@@ -142,5 +142,30 @@ impl crate::LumeEngine {
         }
 
         Ok(final_mail)
+    }
+
+    /// Deletes an email from both the storage backend and the indexing database.
+    /// Verifies ACL ownership before deleting.
+    pub async fn delete_email(
+        &self,
+        message_id: &str,
+        requesting_acl_id: u64,
+    ) -> Result<(), LumeError> {
+        self.authorize_and_get_dict(message_id, requesting_acl_id)?;
+
+        {
+            let db = self.db.lock().unwrap();
+            db.execute(
+                "DELETE FROM messages WHERE message_id = ?1 AND acl_id = ?2",
+                rusqlite::params![message_id, requesting_acl_id],
+            )?;
+        }
+
+        let path = self.storage_root.join(format!("{}.lmail", message_id));
+        if path.exists() {
+            tokio::fs::remove_file(path).await?;
+        }
+
+        Ok(())
     }
 }

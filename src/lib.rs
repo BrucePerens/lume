@@ -39,8 +39,6 @@ pub struct LumeEngine {
     pub storage_root: PathBuf,
     /// Thread-safe connection to the local SQLite indexing database.
     pub db: std::sync::Mutex<rusqlite::Connection>,
-    /// The current Zstandard dictionary ID used for compressing new messages.
-    pub active_dict_version: u32,
     /// The manager responsible for compressing and decompressing payloads.
     pub compression_manager: compression::CompressionManager,
 }
@@ -64,7 +62,6 @@ impl LumeEngine {
         Ok(Self {
             storage_root: root,
             db: std::sync::Mutex::new(db),
-            active_dict_version: 0,
             compression_manager: compression::CompressionManager::new(),
         })
     }

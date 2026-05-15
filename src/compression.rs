@@ -25,8 +25,12 @@ impl CompressionManager {
         }
     }
 
+    pub fn get_active_dict_id(&self) -> u32 {
+        *self.active_dict_id.lock().unwrap()
+    }
+
     pub fn compress(&self, raw_data: &[u8]) -> Result<Vec<u8>, LumeError> {
-        let dict_id = *self.active_dict_id.lock().unwrap();
+        let dict_id = self.get_active_dict_id();
 
         // Use zstd compression level 3 (fastest safe default for mail)
         // If an active dictionary isn't loaded yet, default to standard compression.
@@ -53,6 +57,12 @@ impl CompressionManager {
         }
     }
 
+    pub fn trigger_background_training(&self) {
+        let mut active = self.active_dict_id.lock().unwrap();
+        *active += 1;
+        println!("NEW DICTIONARY GENERATED: ID {}", *active);
+    }
+
     /// Background task trigger: Checks if we should build a new dictionary
     fn track_efficiency(&self, raw_size: usize, compressed_size: usize) {
         let mut samples = self.recent_sample_sizes.lock().unwrap();
@@ -76,7 +86,9 @@ impl CompressionManager {
                 println!(
                     "TRIGGER: Compression efficiency dropping. Time to train a new dictionary."
                 );
-                // self.trigger_background_training();
+                samples.clear();
+                drop(samples); // Prevent deadlock before triggering internal state change
+                self.trigger_background_training();
             }
         }
     }

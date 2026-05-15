@@ -141,4 +141,40 @@ impl LumeEngine {
             Err(LumeError::AccessDenied)
         }
     }
+
+    /// Retrieves a list of message IDs matching a specific sender for a given user.
+    pub fn search_by_sender(
+        &self,
+        requesting_acl_id: u64,
+        sender: &str,
+    ) -> Result<Vec<String>, LumeError> {
+        let db = self.db.lock().unwrap();
+        let mut stmt =
+            db.prepare("SELECT message_id FROM messages WHERE acl_id = ?1 AND sender = ?2")?;
+        let mut rows = stmt.query(params![requesting_acl_id, sender])?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows.next()? {
+            results.push(row.get(0)?);
+        }
+        Ok(results)
+    }
+
+    /// Retrieves a list of message IDs matching a specific subject (using LIKE) for a given user.
+    pub fn search_by_subject(
+        &self,
+        requesting_acl_id: u64,
+        subject_query: &str,
+    ) -> Result<Vec<String>, LumeError> {
+        let db = self.db.lock().unwrap();
+        let mut stmt =
+            db.prepare("SELECT message_id FROM messages WHERE acl_id = ?1 AND subject LIKE ?2")?;
+        let mut rows = stmt.query(params![requesting_acl_id, format!("%{}%", subject_query)])?;
+
+        let mut results = Vec::new();
+        while let Some(row) = rows.next()? {
+            results.push(row.get(0)?);
+        }
+        Ok(results)
+    }
 }
