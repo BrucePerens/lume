@@ -1,0 +1,2 @@
+xxhash>=3.4.1
+zstandard>=0.22.0

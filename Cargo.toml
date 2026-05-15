@@ -1,0 +1,21 @@
+[package]
+name = "lume"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.32", features = ["full"] }
+rusqlite = { version = "0.29", features = ["bundled"] }
+zstd = "0.13"
+xxhash-rust = { version = "0.8", features = ["xxh64"] }
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+mailparse = "0.14"
+thiserror = "1.0"
+
+# --- NEW SECURITY DEPENDENCIES ---
+argon2 = "0.5"
+password-hash = "0.5"
+nix = { version = "0.27.1", features = ["user", "fs"] }
+axum = { version = "0.6", features = ["headers"] }
+tower-http = { version = "0.4", features = ["set-header", "cors", "trace"] }
