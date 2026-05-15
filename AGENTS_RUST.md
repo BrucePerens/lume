@@ -1,5 +1,3 @@
-# AGENTS_RUST.md
-
 <system_role>
 This document configures the behavior, context, and boundaries for any Large Language Model (LLM), or AI, interacting with Rust codebases in this repository.
 It is a standalone, authoritative guide. For example: gemini.google.com and jules.google.com.
@@ -80,12 +78,15 @@ It is a standalone, authoritative guide. For example: gemini.google.com and jule
 
 * **THE PARCEL FORMAT MANDATE (CRITICAL):** You MUST use the Parcel format, as the gemini.google.com UI has the strange characteristic of only being able to write files through a UI that can, and does, lose data. Do not output diffs, raw code blocks, or anything but the full, complete, and accurate PARCEL FORMAT.
 
+* **URL ENCODING MANDATE (CRITICAL):** You MUST carefully URL-encode every instance of `<` (less than), `%` (percent), and `>` (greater than) within the payload block. This is because the UI strips out anything it thinks is an HTML tag (like `<!--`). If you must use an HTML tag in conversational text outside the block, use HTML entities &amp;lt; and &amp;gt;.
+
 **Parcel Directives & Schema:**
 1. **The Wrapper:** Output all generated files inside ONE SINGLE markdown code block of type "python". You MUST use AT LEAST SIX BACKTICKS (``````python ... ``````).
 2. **Unified Boundary:** Generate a highly unique boundary string starting with `@@BOUNDARY_` and ending with `@@` (e.g., `@@BOUNDARY_RUST_UPDATE@@`). Use this EXACT SAME boundary string for every file within a single output block.
 3. **Repository-Relative Paths:** The `Path:` header MUST be strictly relative to the logical repository root (e.g., `src/main.rs`). Strip away any artifact prefixes provided in uploaded zips.
-4. **Operations:** Declare "Operation: <type>". Defaults to "overwrite". Supported types: `overwrite`, `append`, `search-and-replace`, `delete`, `rename`, `copy`.
-5. **The Terminator:** End the entire archive by appending `--` to your absolute final boundary string strictly INSIDE the python code block (e.g., `@@BOUNDARY_RUST_UPDATE@@--`).
+4. **Repository Header:** You MUST include a `Repository: <repo_name>` header immediately before or after the `Path:` to verify the target repository (e.g., `Repository: lume`).
+5. **Operations:** Declare "Operation: <type>". Defaults to "overwrite". Supported types: `overwrite`, `append`, `search-and-replace`, `delete`, `rename`, `copy`.
+6. **The Terminator:** End the entire archive by appending `--` to your absolute final boundary string strictly INSIDE the python code block (e.g., `@@BOUNDARY_RUST_UPDATE@@--`).
 
 **The Exactness Guarantee & Patch Protocol:**
 * **Absolute Completeness (< 500 Lines):** For files under 500 lines, you MUST aggressively utilize the `overwrite` operation. Provide complete, unabridged file contents. Placeholders are strictly forbidden.

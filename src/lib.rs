@@ -1,8 +1,8 @@
-pub mod storage;
 pub mod compression;
 pub mod index;
 pub mod mime_parser;
-pub mod security; // NEW
+pub mod security;
+pub mod storage;
 
 use std::path::PathBuf;
 use thiserror::Error;
@@ -27,9 +27,9 @@ pub enum LumeError {
 
 pub struct LumeEngine {
     pub storage_root: PathBuf,
-    pub db: rusqlite::Connection,
+    pub db: std::sync::Mutex<rusqlite::Connection>,
     pub active_dict_version: u32,
-    // Note: compression_manager would be initialized here in the full build
+    pub compression_manager: compression::CompressionManager,
 }
 
 impl LumeEngine {
@@ -37,11 +37,18 @@ impl LumeEngine {
         std::fs::create_dir_all(&root)?;
         let db_path = root.join("lume_meta.sqlite");
         let db = rusqlite::Connection::open(db_path)?;
-        
+
+        // Enable Write-Ahead Logging for high concurrency support with Axum
+        db.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;",
+        )?;
+
         Ok(Self {
             storage_root: root,
-            db,
-            active_dict_version: 0, 
+            db: std::sync::Mutex::new(db),
+            active_dict_version: 0,
+            compression_manager: compression::CompressionManager::new(),
         })
     }
 }

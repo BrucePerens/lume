@@ -11,11 +11,6 @@ import urllib.parse
 import shutil
 
 def _cluster_indices(indices, max_gap):
-    """
-    Groups overlapping or adjacent match indices into clusters.
-    This prevents the "false ambiguity" exception when a sliding window
-    finds adjacent matches with identical similarity scores.
-    """
     if not indices:
         return []
     clusters = []
@@ -28,59 +23,7 @@ def _cluster_indices(indices, max_gap):
             clusters.append([idx])
     return clusters
 
-
-def lint_file_content(filepath, content):
-    """Lints the complete file content in-memory before writing it to disk."""
-    post_errors = []
-    warnings = []
-    ext = os.path.splitext(filepath)[1].lower()
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_filepath = os.path.join(tmpdir, filepath)
-        os.makedirs(os.path.dirname(tmp_filepath), exist_ok=True)
-        with open(tmp_filepath, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        # 1. rustfmt
-        if ext == ".rs":
-            cmd = ["rustfmt", "--edition", "2021", tmp_filepath]
-            try:
-                res = subprocess.run(cmd, capture_output=True, text=True)
-                if res.returncode != 0:
-                    out = res.stderr.strip() or res.stdout.strip()
-                    post_errors.append(f"[ERROR] rustfmt syntax/formatting issues:\n{out}")
-            except FileNotFoundError:
-                warnings.append("[WARN] rustfmt is not installed. Skipping verification.")
-
-        # 2. XML
-        elif ext == ".xml":
-            try:
-                ET.fromstring(content)
-            except ET.ParseError as e:
-                post_errors.append(f"[ERROR] XML Parsing Error: {e}")
-
-        # 3. Markdown
-        elif ext == ".md":
-            try:
-                mask_markdown_and_check_balance(content)
-            except ValueError as e:
-                post_errors.append(f"[ERROR] {e}")
-
-        # 4. JSON
-        elif ext == ".json":
-            try:
-                json.loads(content)
-            except Exception as e:
-                post_errors.append(f"[ERROR] Invalid JSON: {e}")
-
-    return post_errors, warnings
-
-
 def mask_markdown_and_check_balance(payload):
-    """
-    Accurate line-by-line parser to check Markdown code block balance.
-    Respects CommonMark rules for fenced blocks, inline spans, and backslash escapes.
-    """
     in_fenced = False
     fence_char = ""
     fence_len = 0
@@ -93,7 +36,6 @@ def mask_markdown_and_check_balance(payload):
     for line in lines:
         stripped = line.lstrip(" \t")
 
-        # 1. Handle Fenced Code Blocks
         if not in_fenced and not in_inline:
             if stripped.startswith("```") or stripped.startswith("~~~"):
                 char = stripped[0]
@@ -121,7 +63,6 @@ def mask_markdown_and_check_balance(payload):
                     in_fenced = False
             continue
 
-        # 2. Handle Inline Code Spans
         i = 0
         n = len(line)
         while i < n:
@@ -150,9 +91,7 @@ def mask_markdown_and_check_balance(payload):
 
     return payload
 
-
 def check_ai_foibles(payload, filepath=""):
-    """Strips rogue markdown wrappers and rejects laziness placeholders."""
     if payload.lstrip().startswith("```"):
         lines = payload.strip("\r\n").split("\n")
         if (
@@ -193,13 +132,9 @@ def check_ai_foibles(payload, filepath=""):
 
     return payload
 
-
 def validate_syntax_in_memory(filepath, content):
-    """Validates the syntax of the fully patched file in memory before writing to disk."""
     ext = os.path.splitext(filepath)[1].lower()
-    if ext == ".rs":
-        pass # Validated via rustfmt in lint phase
-    elif ext == ".json":
+    if ext == ".json":
         try:
             json.loads(content)
         except Exception as e:
@@ -211,7 +146,6 @@ def validate_syntax_in_memory(filepath, content):
             raise ValueError(f"XML Syntax Error: {e}")
     elif ext == ".md":
         mask_markdown_and_check_balance(content)
-
 
 def get_semantic_tokens(source_text):
     tokens = []
@@ -226,7 +160,6 @@ def get_semantic_tokens(source_text):
             }
         )
     return tokens if tokens else None
-
 
 def smart_replace(original_text, start_idx, end_idx, replace_text, filepath=""):
     orig_match = original_text[start_idx:end_idx]
@@ -265,6 +198,7 @@ def smart_replace(original_text, start_idx, end_idx, replace_text, filepath=""):
 
     base_shift = orig_min_indent - replace_min_indent
     shifts_to_try = [base_shift]
+
     if filepath.endswith(".rs"):
         shifts_to_try.extend([0, base_shift + 4, base_shift - 4, 4])
 
@@ -299,14 +233,11 @@ def smart_replace(original_text, start_idx, end_idx, replace_text, filepath=""):
         )
 
         if filepath.endswith(".rs"):
-            if best_new_text is None:
-                best_new_text = new_text
             return new_text
         else:
             return new_text
 
     return best_new_text or new_text
-
 
 def fuzzy_line_replace(original_text, search_text, replace_text, filepath=""):
     orig_lines = original_text.split("\n")
@@ -354,7 +285,6 @@ def fuzzy_line_replace(original_text, search_text, replace_text, filepath=""):
 
     return None
 
-
 def semantic_token_replace(original_text, search_text, replace_text, filepath=""):
     target_tokens = get_semantic_tokens(original_text)
     search_tokens = get_semantic_tokens(search_text)
@@ -394,7 +324,6 @@ def semantic_token_replace(original_text, search_text, replace_text, filepath=""
         return smart_replace(original_text, start_idx, end_idx, replace_text, filepath)
 
     return None
-
 
 def fuzzy_token_replace(original_text, search_text, replace_text, filepath=""):
     target_tokens = get_semantic_tokens(original_text)
@@ -439,10 +368,8 @@ def fuzzy_token_replace(original_text, search_text, replace_text, filepath=""):
 
     return None
 
-
 def get_markdown_tokens(text):
     tokens = []
-    # Capture alphanumerics OR non-whitespace punctuation to prevent boundary clipping
     for match in re.finditer(r"([a-zA-Z0-9]+|[^\w\s])", text):
         tokens.append(
             {
@@ -453,7 +380,6 @@ def get_markdown_tokens(text):
             }
         )
     return tokens
-
 
 def semantic_markdown_replace(original_text, search_text, replace_text, filepath=""):
     target_tokens = get_markdown_tokens(original_text)
@@ -493,7 +419,6 @@ def semantic_markdown_replace(original_text, search_text, replace_text, filepath
         return smart_replace(original_text, start_idx, end_idx, replace_text, filepath)
 
     return None
-
 
 def boundary_markdown_replace(original_text, search_text, replace_text, filepath=""):
     target_tokens = get_markdown_tokens(original_text)
@@ -540,7 +465,6 @@ def boundary_markdown_replace(original_text, search_text, replace_text, filepath
     end_idx = target_tokens[best_end_token_idx]["end"]
     return smart_replace(original_text, start_idx, end_idx, replace_text, filepath)
 
-
 def fuzzy_markdown_replace(original_text, search_text, replace_text, filepath=""):
     target_tokens = get_markdown_tokens(original_text)
     search_tokens = get_markdown_tokens(search_text)
@@ -582,7 +506,6 @@ def fuzzy_markdown_replace(original_text, search_text, replace_text, filepath=""
         return smart_replace(original_text, start_idx, end_idx, replace_text, filepath)
 
     return None
-
 
 def get_xml_tokens(text):
     tokens = []
@@ -635,7 +558,6 @@ def get_xml_tokens(text):
         )
     return tokens
 
-
 def semantic_xml_replace(original_text, search_text, replace_text, filepath=""):
     target_tokens = get_xml_tokens(original_text)
     search_tokens = get_xml_tokens(search_text)
@@ -674,7 +596,6 @@ def semantic_xml_replace(original_text, search_text, replace_text, filepath=""):
 
     return None
 
-
 def whitespace_agnostic_replace(original_text, search_text, replace_text, filepath=""):
     search_stripped = "".join(search_text.split())
     if not search_stripped:
@@ -712,7 +633,6 @@ def whitespace_agnostic_replace(original_text, search_text, replace_text, filepa
         )
 
     return None
-
 
 def parse_search_replace_blocks(payload):
     def _strip_empty_bounding_lines(lines):
@@ -778,9 +698,15 @@ def parse_search_replace_blocks(payload):
 
     return blocks
 
+def get_current_repo_name():
+    try:
+        res = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, check=True)
+        return os.path.basename(res.stdout.strip())
+    except Exception:
+        return os.path.basename(os.path.abspath("."))
 
 def extract_parcel(raw_text):
-    # Normalize line endings to prevent \r logic drifting and boundary failure
+    current_repo = get_current_repo_name()
     raw_text = raw_text.replace("\r\n", "\n")
     lines = raw_text.splitlines()
     boundary = None
@@ -828,12 +754,12 @@ def extract_parcel(raw_text):
                     in_header = False
                     continue
                 if line.startswith(
-                    ("Path: ", "Operation: ", "New-Path: ", "Mode: ", "Encoding: ")
+                    ("Path: ", "Operation: ", "New-Path: ", "Mode: ", "Encoding: ", "Repository: ")
                 ):
                     header_lines.append(line)
                 else:
-                    in_header = False
-                    payload_lines.append(line)
+                    print(f"❌ Error: Unrecognized or malformed header line in Parcel: '{line.strip()}'. Aborting extraction.\n")
+                    return
             else:
                 payload_lines.append(line)
 
@@ -867,19 +793,20 @@ def extract_parcel(raw_text):
         mode_lines = [l for l in header.splitlines() if l.startswith("Mode: ")]
         mode_str = mode_lines[0].replace("Mode: ", "").strip() if mode_lines else None
 
+        repo_lines = [l for l in header.splitlines() if l.startswith("Repository: ")]
+        target_repo = repo_lines[0].replace("Repository: ", "").strip() if repo_lines else None
+
         if terminator in payload:
             payload = payload.split(terminator)[0]
 
         payload = urllib.parse.unquote(payload)
 
         if filepath.endswith((".rs", ".py", ".sh", ".conf", ".yaml", ".json", ".xml", ".csv", ".md", ".toml")):
-            # 1. Fix standard or escaped markdown links wrapping URLs: https://a.com or \"https://a.com"\
             payload = re.sub(
                 r'\\?\[\s*(["\']?)\s*(https?://[^\]"\'\s]+)\s*\1\s*\\?\]\s*\\?\(\s*(https?://[^)\s]+)\s*\\?\)',
                 r'\1\2\1',
                 payload
             )
-            # 2. Fix the https://a.com mangling
             payload = re.sub(
                 r"(https?://)?\[([^\]]+)\]\([^)]*https?://[^)]+\)",
                 lambda m: (m.group(1) or "") + m.group(2),
@@ -890,6 +817,15 @@ def extract_parcel(raw_text):
             payload = check_ai_foibles(payload, filepath)
         except ValueError as e:
             tasks_by_file.setdefault(filepath, []).append({"error": str(e)})
+            continue
+
+        if not target_repo:
+            tasks_by_file.setdefault(filepath, []).append({"error": "Missing 'Repository: <name>' header in Parcel."})
+            continue
+
+        target_repo_name = target_repo.split("/")[-1] if "/" in target_repo else target_repo
+        if target_repo_name.lower() != current_repo.lower():
+            tasks_by_file.setdefault(filepath, []).append({"error": f"Repository mismatch. Parcel targets '{target_repo_name}', but current is '{current_repo}'."})
             continue
 
         payload = payload.rstrip() + "\n"
@@ -1033,7 +969,7 @@ def extract_parcel(raw_text):
                         replace_text = block["replace"]
 
                         new_text = None
-                        if filepath.endswith(".rs"):
+                        if filepath.endswith(".rs") or filepath.endswith(".py"):
                             new_text = fuzzy_line_replace(
                                 current_text, search_text, replace_text, filepath
                             )
@@ -1049,9 +985,9 @@ def extract_parcel(raw_text):
                                 new_text = whitespace_agnostic_replace(
                                  current_text, search_text, replace_text, filepath
                                 )
-                            elif filepath.endswith(".md"):
-                                new_text = fuzzy_line_replace(
-                                 current_text, search_text, replace_text, filepath
+                        elif filepath.endswith(".md"):
+                            new_text = fuzzy_line_replace(
+                                current_text, search_text, replace_text, filepath
                             )
                             if new_text is None:
                                 new_text = semantic_markdown_replace(
@@ -1104,12 +1040,6 @@ def extract_parcel(raw_text):
                     )
                 validate_syntax_in_memory(filepath, current_text)
 
-                lint_errs, lint_warns = lint_file_content(filepath, current_text)
-                if lint_errs:
-                    errors.extend(lint_errs)
-                if lint_warns:
-                    warnings.extend(lint_warns)
-
         except Exception as e:
             errors.append(str(e))
 
@@ -1123,7 +1053,7 @@ def extract_parcel(raw_text):
                 if os.path.exists(filepath):
                     os.remove(filepath)
                 print(f"✅ Deleted: {filepath}")
-                if filepath.endswith(".rs") or filepath == "Cargo.toml":
+                if filepath.endswith(".rs") or filepath.endswith(".toml"):
                     rust_files_changed = True
                 continue
 
@@ -1165,7 +1095,7 @@ def extract_parcel(raw_text):
             if file_mutated:
                 if is_shortened:
                     shortened_files.append(shortened_str)
-                if filepath.endswith(".rs") or filepath == "Cargo.toml":
+                if filepath.endswith(".rs") or filepath.endswith(".toml"):
                     rust_files_changed = True
 
             _print_summary(filepath, errors, warnings, aborted=False, count=len(tasks))
@@ -1187,18 +1117,23 @@ def extract_parcel(raw_text):
         print("!" * 80 + "\n")
 
     if rust_files_changed:
-        print("\n[*] Rust files modified. Running cargo check...")
+        print("\n[*] Rust files modified. Formatting and checking...")
         try:
-            res = subprocess.run(
+            fmt_res = subprocess.run(["cargo", "fmt", "--all"], capture_output=True, text=True)
+            if fmt_res.returncode == 0:
+                print("✅ cargo fmt applied successfully.")
+            else:
+                print(f"⚠️  cargo fmt found issues:\n{fmt_res.stderr or fmt_res.stdout}")
+
+            chk_res = subprocess.run(
                 ["cargo", "check", "--workspace", "--all-targets"], capture_output=True, text=True
             )
-            if res.returncode == 0:
+            if chk_res.returncode == 0:
                 print("✅ cargo check passed successfully.")
             else:
-                print(f"⚠️  cargo check found issues:\n{res.stderr or res.stdout}")
+                print(f"⚠️  cargo check found issues:\n{chk_res.stderr or chk_res.stdout}")
         except Exception as e:
-            print(f"⚠️  Failed to execute cargo check: {e}")
-
+            print(f"⚠️  Failed to execute cargo commands: {e}")
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:

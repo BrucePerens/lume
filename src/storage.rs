@@ -1,8 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use xxhash_rust::xxh64::xxh64;
-use serde::{Serialize, Deserialize};
 
 use crate::LumeError;
 
@@ -19,20 +19,21 @@ pub struct MailHeader {
 impl crate::LumeEngine {
     /// Stores an email safely with atomic guarantees, dictionary compression, and fsync.
     pub async fn store_email(
-        &self, 
-        message_id: &str, 
-        acl_id: u64, 
-        raw_email_bytes: &[u8]
+        &self,
+        message_id: &str,
+        acl_id: u64,
+        raw_email_bytes: &[u8],
     ) -> Result<PathBuf, LumeError> {
-        
         // 1. Checksum the original uncompressed data for future integrity checks
         let original_checksum = xxh64(raw_email_bytes, 0);
 
         // 2. Parse MIME and separate text from binary
         let parts = self.parse_and_split(raw_email_bytes)?;
-        
+
         // 3. Compress the text portion using the active global dictionary
-        let compressed_text = self.compression_manager.compress(&parts.compressible_text)?;
+        let compressed_text = self
+            .compression_manager
+            .compress(&parts.compressible_text)?;
         let text_len = compressed_text.len() as u32;
 
         // 4. Construct the Payload (Compressed Text + Raw Binary Attachments)
@@ -48,12 +49,14 @@ impl crate::LumeEngine {
             original_checksum,
             text_len,
         };
-        let header_bytes = bincode::serialize(&header)
-            .map_err(|e| LumeError::Compression(e.to_string()))?;
+        let header_bytes =
+            bincode::serialize(&header).map_err(|e| LumeError::Compression(e.to_string()))?;
 
-        // 6. Secure Atomic Write
+        // 6. Secure Atomic Write (Using UUID to prevent race conditions during tmp file creation)
         let final_path = self.storage_root.join(format!("{}.lmail", message_id));
-        let tmp_path = self.storage_root.join(format!("{}.tmp", message_id));
+        let tmp_path =
+            self.storage_root
+                .join(format!("{}_{}.tmp", message_id, uuid::Uuid::new_v4()));
 
         {
             let mut file = OpenOptions::new()
@@ -83,17 +86,19 @@ impl crate::LumeEngine {
         // Verify Magic
         let mut magic = [0u8; 4];
         file.read_exact(&mut magic).await?;
-        if &magic != LUME_MAGIC { return Err(LumeError::Corruption); }
+        if &magic != LUME_MAGIC {
+            return Err(LumeError::Corruption);
+        }
 
         // Read Header
         let mut h_len_bytes = [0u8; 4];
         file.read_exact(&mut h_len_bytes).await?;
         let h_len = u32::from_be_bytes(h_len_bytes) as usize;
-        
+
         let mut h_bytes = vec![0u8; h_len];
         file.read_exact(&mut h_bytes).await?;
-        let header: MailHeader = bincode::deserialize(&h_bytes)
-            .map_err(|e| LumeError::Compression(e.to_string()))?;
+        let header: MailHeader =
+            bincode::deserialize(&h_bytes).map_err(|e| LumeError::Compression(e.to_string()))?;
 
         // Read Payload
         let mut payload = Vec::new();
@@ -101,9 +106,11 @@ impl crate::LumeEngine {
 
         // Decompress Text portion
         let (comp_text, binary_data) = payload.split_at(header.text_len as usize);
-        let decompressed_text = self.compression_manager.decompress(comp_text, header.dict_id)?;
+        let decompressed_text = self
+            .compression_manager
+            .decompress(comp_text, header.dict_id)?;
 
-        // Reconstruct (Simple concatenation for this model, 
+        // Reconstruct (Simple concatenation for this model,
         // in production this would involve re-assembling MIME parts)
         let mut final_mail = decompressed_text;
         final_mail.extend_from_slice(binary_data);

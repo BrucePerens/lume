@@ -16,6 +16,9 @@ thiserror = "1.0"
 # --- NEW SECURITY DEPENDENCIES ---
 argon2 = "0.5"
 password-hash = "0.5"
+rand_core = { version = "0.6", features = ["getrandom"] }
 nix = { version = "0.27.1", features = ["user", "fs"] }
 axum = { version = "0.6", features = ["headers"] }
+axum-server = { version = "0.5", features = ["tls-rustls"] }
 tower-http = { version = "0.4", features = ["set-header", "cors", "trace"] }
+uuid = { version = "1.4", features = ["v4"] }
