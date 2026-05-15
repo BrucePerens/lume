@@ -10,8 +10,11 @@ import os
 import subprocess
 import argparse
 
-IGNORE_DIRS = {".git", "__pycache__", "node_modules", "venv", ".venv", "env"}
+IGNORE_DIRS = {".git", "target", "vendor", "__pycache__", "node_modules", "venv", ".venv", "env"}
 IGNORE_EXTENSIONS = {
+    ".rlib",
+    ".rmeta",
+    ".pdb",
     ".pyc",
     ".pyo",
     ".so",

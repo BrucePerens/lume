@@ -5,13 +5,10 @@ import re
 import subprocess
 import xml.etree.ElementTree as ET
 import json
-import ast
 import difflib
 import tempfile
-import importlib
 import urllib.parse
 import shutil
-import check_burn_list
 
 def _cluster_indices(indices, max_gap):
     """
@@ -44,19 +41,16 @@ def lint_file_content(filepath, content):
         with open(tmp_filepath, "w", encoding="utf-8") as f:
             f.write(content)
 
-        # 1. flake8
-        if ext == ".py":
-            cmd = ["flake8", "--select=E9,F"]
-            if os.path.basename(filepath) == "__init__.py":
-                cmd.append("--extend-ignore=F401")
-            cmd.append(tmp_filepath)
+        # 1. rustfmt
+        if ext == ".rs":
+            cmd = ["rustfmt", "--edition", "2021", tmp_filepath]
             try:
                 res = subprocess.run(cmd, capture_output=True, text=True)
                 if res.returncode != 0:
-                    out = res.stdout.strip().replace(tmp_filepath, filepath)
-                    post_errors.append(f"[ERROR] flake8 found issues:\n{out}")
+                    out = res.stderr.strip() or res.stdout.strip()
+                    post_errors.append(f"[ERROR] rustfmt syntax/formatting issues:\n{out}")
             except FileNotFoundError:
-                warnings.append("[WARN] flake8 is not installed. Skipping verification.")
+                warnings.append("[WARN] rustfmt is not installed. Skipping verification.")
 
         # 2. XML
         elif ext == ".xml":
@@ -78,22 +72,6 @@ def lint_file_content(filepath, content):
                 json.loads(content)
             except Exception as e:
                 post_errors.append(f"[ERROR] Invalid JSON: {e}")
-
-        # 5. check_burn_list
-        if ext in (".py", ".xml", ".js", ".csv"):
-            if check_burn_list:
-                try:
-                    importlib.reload(check_burn_list)  # Ensure clean state
-                    check_burn_list.FOUND_TEST_CONTENTS = {}
-                    check_burn_list.REQUIRE_TEST_VERIFICATION = []
-                    errs, warns = check_burn_list.scan_file(tmp_filepath)
-                    if errs:
-                        err_str = "\n".join(errs).replace(tmp_filepath, filepath)
-                        post_errors.append(f"[ERROR] check_burn_list.py rejected:\n{err_str}")
-                    for w in warns:
-                        warnings.append(f"[WARN] check_burn_list.py warning: {w.replace(tmp_filepath, filepath)}")
-                except Exception as e:
-                    warnings.append(f"[WARN] Failed to execute custom linter: {e}")
 
     return post_errors, warnings
 
@@ -219,11 +197,8 @@ def check_ai_foibles(payload, filepath=""):
 def validate_syntax_in_memory(filepath, content):
     """Validates the syntax of the fully patched file in memory before writing to disk."""
     ext = os.path.splitext(filepath)[1].lower()
-    if ext == ".py":
-        try:
-            ast.parse(content)
-        except SyntaxError as e:
-            raise ValueError(f"Python Syntax/Indentation Error: {e}")
+    if ext == ".rs":
+        pass # Validated via rustfmt in lint phase
     elif ext == ".json":
         try:
             json.loads(content)
@@ -290,24 +265,8 @@ def smart_replace(original_text, start_idx, end_idx, replace_text, filepath=""):
 
     base_shift = orig_min_indent - replace_min_indent
     shifts_to_try = [base_shift]
-    if filepath.endswith(".py"):
-        shifts_to_try.extend(
-            [
-                0,
-                base_shift + 4,
-                base_shift - 4,
-                base_shift + 8,
-                base_shift - 8,
-                base_shift + 12,
-                base_shift - 12,
-                4,
-                8,
-                12,
-                16,
-                -4,
-                -8,
-            ]
-        )
+    if filepath.endswith(".rs"):
+        shifts_to_try.extend([0, base_shift + 4, base_shift - 4, 4])
 
     best_new_text = None
 
@@ -339,14 +298,10 @@ def smart_replace(original_text, start_idx, end_idx, replace_text, filepath=""):
             original_text[:start_idx] + indented_replace_text + original_text[end_idx:]
         )
 
-        if filepath.endswith(".py"):
-            try:
-                ast.parse(new_text)
-                return new_text
-            except SyntaxError:
-                if best_new_text is None:
-                    best_new_text = new_text
-                continue
+        if filepath.endswith(".rs"):
+            if best_new_text is None:
+                best_new_text = new_text
+            return new_text
         else:
             return new_text
 
@@ -917,7 +872,7 @@ def extract_parcel(raw_text):
 
         payload = urllib.parse.unquote(payload)
 
-        if filepath.endswith((".py", ".sh", ".conf", ".yaml", ".json", ".xml", ".csv", ".md")):
+        if filepath.endswith((".rs", ".py", ".sh", ".conf", ".yaml", ".json", ".xml", ".csv", ".md", ".toml")):
             # 1. Fix standard or escaped markdown links wrapping URLs: https://a.com or \"https://a.com"\
             payload = re.sub(
                 r'\\?\[\s*(["\']?)\s*(https?://[^\]"\'\s]+)\s*\1\s*\\?\]\s*\\?\(\s*(https?://[^)\s]+)\s*\\?\)',
@@ -966,7 +921,7 @@ def extract_parcel(raw_text):
 
     failed_files = []
     shortened_files = []
-    python_files_changed = False
+    rust_files_changed = False
 
     for filepath, tasks in tasks_by_file.items():
         errors = []
@@ -1078,7 +1033,7 @@ def extract_parcel(raw_text):
                         replace_text = block["replace"]
 
                         new_text = None
-                        if filepath.endswith(".py"):
+                        if filepath.endswith(".rs"):
                             new_text = fuzzy_line_replace(
                                 current_text, search_text, replace_text, filepath
                             )
@@ -1143,7 +1098,7 @@ def extract_parcel(raw_text):
                     file_mutated = True
 
             if file_mutated:
-                if filepath.endswith((".py", ".xml", ".md", ".js", ".html")):
+                if filepath.endswith((".rs", ".py", ".xml", ".md", ".js", ".html", ".toml")):
                     current_text = re.sub(
                         r"[ \t]+$", "", current_text, flags=re.MULTILINE
                     )
@@ -1168,24 +1123,24 @@ def extract_parcel(raw_text):
                 if os.path.exists(filepath):
                     os.remove(filepath)
                 print(f"✅ Deleted: {filepath}")
-                if filepath.endswith(".py"):
-                    python_files_changed = True
+                if filepath.endswith(".rs") or filepath == "Cargo.toml":
+                    rust_files_changed = True
                 continue
 
             if renamed_to:
                 os.makedirs(os.path.dirname(renamed_to), exist_ok=True)
                 os.rename(filepath, renamed_to)
                 print(f"✅ Renamed: {filepath} -> {renamed_to}")
-                if filepath.endswith(".py") or renamed_to.endswith(".py"):
-                    python_files_changed = True
+                if filepath.endswith(".rs") or renamed_to.endswith(".rs"):
+                    rust_files_changed = True
                 continue
 
             if copied_to:
                 os.makedirs(os.path.dirname(copied_to), exist_ok=True)
                 shutil.copy2(filepath, copied_to)
                 print(f"✅ Copied: {filepath} -> {copied_to}")
-                if filepath.endswith(".py") or copied_to.endswith(".py"):
-                    python_files_changed = True
+                if filepath.endswith(".rs") or copied_to.endswith(".rs"):
+                    rust_files_changed = True
                 continue
 
             is_shortened = False
@@ -1210,8 +1165,8 @@ def extract_parcel(raw_text):
             if file_mutated:
                 if is_shortened:
                     shortened_files.append(shortened_str)
-                if filepath.endswith(".py"):
-                    python_files_changed = True
+                if filepath.endswith(".rs") or filepath == "Cargo.toml":
+                    rust_files_changed = True
 
             _print_summary(filepath, errors, warnings, aborted=False, count=len(tasks))
 
@@ -1231,24 +1186,18 @@ def extract_parcel(raw_text):
             print(f"  - {sf}")
         print("!" * 80 + "\n")
 
-    if python_files_changed:
-        generate_script = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "generate_pot.py"
-        )
-        if os.path.exists(generate_script):
-            print("\n[*] Python files modified. Synchronizing i18n/hams_master.pot...")
-            try:
-                res = subprocess.run(
-                    [sys.executable, generate_script], capture_output=True, text=True
-                )
-                if res.returncode == 0:
-                    print("✅ i18n/hams_master.pot synchronized successfully.")
-                else:
-                    print(
-                        f"⚠️  Failed to synchronize POT file:\n{res.stderr or res.stdout}"
-                    )
-            except Exception as e:
-                print(f"⚠️  Failed to execute generate_pot.py: {e}")
+    if rust_files_changed:
+        print("\n[*] Rust files modified. Running cargo check...")
+        try:
+            res = subprocess.run(
+                ["cargo", "check", "--workspace", "--all-targets"], capture_output=True, text=True
+            )
+            if res.returncode == 0:
+                print("✅ cargo check passed successfully.")
+            else:
+                print(f"⚠️  cargo check found issues:\n{res.stderr or res.stdout}")
+        except Exception as e:
+            print(f"⚠️  Failed to execute cargo check: {e}")
 
 
 if __name__ == "__main__":
