@@ -98,9 +98,6 @@ impl MailGuard for LumeMailService {
     }
 }
 
-// ---------------------------------------------------------
-// IN-MEMORY SINK IMPLEMENTATION
-// ---------------------------------------------------------
 #[derive(Clone)]
 struct LumeSink {
     buffer: Vec<u8>,
@@ -324,8 +321,22 @@ async fn main() {
         accepted_hosts: Arc::new(accepted_hosts),
     };
 
-    info!(
-        "Lume Mail Service configured successfully on {}",
-        config.server.bind_addr
-    );
+    let local_addr = {
+        let listener =
+            std::net::TcpListener::bind(&config.server.bind_addr).expect("Failed to bind TCP port");
+        listener.local_addr().unwrap()
+    };
+
+    info!("listening on {}", local_addr);
+
+    use samotop::mail::Builder;
+    use samotop::server::TcpServer;
+    use samotop::smtp::{Esmtp, SmtpParser};
+
+    let mail = Builder + Esmtp.with(SmtpParser) + _service;
+
+    TcpServer::on(local_addr.to_string())
+        .serve(mail.build())
+        .await
+        .expect("Samotop server crashed");
 }

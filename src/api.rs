@@ -1,9 +1,8 @@
 use axum::{
     extract::{Path, State},
-    headers::{authorization::Basic, Authorization},
-    http::{header, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     routing::{get, post},
-    Json, Router, TypedHeader,
+    Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -29,8 +28,6 @@ pub struct MailResponse {
     pub content: String,
 }
 
-/// Constructs the core Axum router, making it available for both the
-/// main daemon runner and the test environment.
 pub fn build_router(engine: LumeEngine) -> Router {
     let state = Arc::new(AppState { engine });
 
@@ -52,15 +49,53 @@ pub fn build_router(engine: LumeEngine) -> Router {
         .with_state(state)
 }
 
+fn decode_basic_auth(headers: &HeaderMap) -> Option<(String, String)> {
+    let auth_header = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    if !auth_header.starts_with("Basic ") {
+        return None;
+    }
+    let b64 = &auth_header[6..];
+
+    let alphabet = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut decode_map = [255u8; 256];
+    for (i, &c) in alphabet.iter().enumerate() {
+        decode_map[c as usize] = i as u8;
+    }
+    let mut out = Vec::new();
+    let mut buf = 0u32;
+    let mut bits = 0;
+    for &b in b64.as_bytes() {
+        if b == b'=' {
+            break;
+        }
+        let val = decode_map[b as usize];
+        if val == 255 {
+            continue;
+        }
+        buf = (buf << 6) | (val as u32);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+
+    let auth_str = String::from_utf8(out).ok()?;
+    let mut parts = auth_str.splitn(2, ':');
+    let username = parts.next()?.to_string();
+    let password = parts.next()?.to_string();
+    Some((username, password))
+}
+
 async fn store_mail(
     State(state): State<Arc<AppState>>,
-    TypedHeader(auth): TypedHeader<Authorization<Basic>>,
+    headers: HeaderMap,
     Json(payload): Json<StoreRequest>,
 ) -> Result<StatusCode, StatusCode> {
-    // Cryptographic Authentication
+    let (username, password) = decode_basic_auth(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let acl_id = state
         .engine
-        .authenticate_user(auth.username(), auth.password())
+        .authenticate_user(&username, &password)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
     let _path = state
@@ -91,16 +126,15 @@ async fn store_mail(
 
 async fn retrieve_mail(
     State(state): State<Arc<AppState>>,
-    TypedHeader(auth): TypedHeader<Authorization<Basic>>,
+    headers: HeaderMap,
     Path(message_id): Path<String>,
 ) -> Result<Json<MailResponse>, StatusCode> {
-    // Cryptographic Authentication
+    let (username, password) = decode_basic_auth(&headers).ok_or(StatusCode::UNAUTHORIZED)?;
     let acl_id = state
         .engine
-        .authenticate_user(auth.username(), auth.password())
+        .authenticate_user(&username, &password)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
 
-    // ACL Check (Does this user own this email?)
     if state
         .engine
         .authorize_and_get_dict(&message_id, acl_id)

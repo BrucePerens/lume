@@ -22,8 +22,8 @@ thiserror = "2.0"
 
 # --- NEW SECURITY DEPENDENCIES ---
 argon2 = "0.5"
-password-hash = "0.6"
-rand_core = "0.10"
+password-hash = "0.5"
+rand = "0.8"
 nix = { version = "0.31.3", features = ["user", "fs"] }
 axum = "0.8"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
@@ -32,7 +32,6 @@ uuid = { version = "1.23", features = ["v4"] }
 toml = "1.1"
 reqwest = { version = "0.13", features = ["json"] }
 serde_json = "1.0"
-getrandom = "0.4.2"
 rkyv = "0.8.16"
 
 [dev-dependencies]
