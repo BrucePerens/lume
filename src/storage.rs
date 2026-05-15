@@ -1,3 +1,8 @@
+//! # Storage Module
+//!
+//! Handles the atomic, zero-data-loss writing of compressed email payloads to disk,
+//! and verifies cryptographic checksums upon retrieval.
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tokio::fs::{File, OpenOptions};
@@ -8,16 +13,27 @@ use crate::LumeError;
 
 const LUME_MAGIC: &[u8; 4] = b"LMAI";
 
+/// Represents the on-disk metadata header for a stored email payload.
+/// This header provides exact boundary offsets for decompression and cryptographic
+/// integrity verification.
 #[derive(Serialize, Deserialize, Debug)]
 pub struct MailHeader {
+    /// The active Zstandard dictionary used to compress the text block.
     pub dict_id: u32,
+    /// The owner's Access Control List identifier.
     pub acl_id: u64,
+    /// The `xxhash64` checksum of the original uncompressed email payload.
     pub original_checksum: u64,
-    pub text_len: u32, // Length of the compressed text block
+    /// The length of the compressed text block within the file payload.
+    pub text_len: u32,
 }
 
 impl crate::LumeEngine {
     /// Stores an email safely with atomic guarantees, dictionary compression, and fsync.
+    ///
+    /// This function uses a UUID-based `.tmp` staging file to prevent race conditions
+    /// during high-concurrency writes, and performs a hardware `fsync` before atomically
+    /// renaming the file to its final `.lmail` destination.
     pub async fn store_email(
         &self,
         message_id: &str,
@@ -78,7 +94,12 @@ impl crate::LumeEngine {
         Ok(final_path)
     }
 
-    /// Retrieves and reconstructs the original email
+    /// Retrieves and reconstructs the original email payload from disk.
+    ///
+    /// This function verifies the integrity of the file by checking its magic bytes,
+    /// decodes the metadata header, decompresses the text portion using the correct
+    /// dictionary, and strictly verifies the `xxhash64` checksum against the reconstructed
+    /// payload to guarantee zero data loss.
     pub async fn get_email(&self, message_id: &str) -> Result<Vec<u8>, LumeError> {
         let path = self.storage_root.join(format!("{}.lmail", message_id));
         let mut file = File::open(path).await?;

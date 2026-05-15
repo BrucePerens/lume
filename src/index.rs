@@ -1,7 +1,15 @@
+//! # Indexing Module
+//!
+//! Provides the SQLite-based indexing implementation for `LumeEngine`, handling
+//! message metadata retrieval, user authentication, and access control lists (ACLs).
+
 use crate::{security, storage::MailHeader, LumeEngine, LumeError};
 use rusqlite::{params, Connection, Result as SqlResult};
 
 impl LumeEngine {
+    /// Initializes the SQLite database schema.
+    ///
+    /// Creates the `messages` table for metadata and the `users` table for ACL tracking.
     pub fn init_db(db_mutex: &std::sync::Mutex<Connection>) -> SqlResult<()> {
         let db = db_mutex.lock().unwrap();
         // Mail metadata table
@@ -34,7 +42,9 @@ impl LumeEngine {
         Ok(())
     }
 
-    /// Creates a new user with a securely hashed password.
+    /// Registers a new user with a securely hashed password.
+    ///
+    /// Returns the newly generated `acl_id` for the user.
     pub fn register_user(
         &self,
         username: &str,
@@ -52,7 +62,10 @@ impl LumeEngine {
         Ok(acl_id)
     }
 
-    /// Authenticates a user and returns their acl_id if successful.
+    /// Authenticates a user and returns their `acl_id` if successful.
+    ///
+    /// To mitigate timing and enumeration attacks, this function performs a dummy
+    /// Argon2id hash if the user is not found in the database.
     pub fn authenticate_user(
         &self,
         username: &str,
@@ -89,6 +102,10 @@ impl LumeEngine {
         Err(LumeError::AccessDenied)
     }
 
+    /// Indexes a newly stored email message into the SQLite database.
+    ///
+    /// This records the metadata necessary for future retrieval, including the
+    /// `dict_id` required for decompression and the `acl_id` representing ownership.
     pub fn index_message(
         &self,
         message_id: &str,
@@ -104,6 +121,10 @@ impl LumeEngine {
         Ok(())
     }
 
+    /// Authorizes access to an email and retrieves the dictionary ID needed for decompression.
+    ///
+    /// Verifies that the requested `message_id` is owned by the provided `requesting_acl_id`.
+    /// Returns `LumeError::AccessDenied` on failure.
     pub fn authorize_and_get_dict(
         &self,
         message_id: &str,

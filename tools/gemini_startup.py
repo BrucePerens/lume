@@ -9,6 +9,7 @@ resulting in a lean, extremely actionable starting prompt.
 import os
 import subprocess
 import argparse
+import re
 
 IGNORE_DIRS = {".git", "target", "vendor", "__pycache__", "node_modules", "venv", ".venv", "env"}
 IGNORE_EXTENSIONS = {
@@ -48,21 +49,47 @@ def get_git_root():
 def get_github_info(root_dir):
     """
     Determines the GitHub username and repository name.
-    Prompts the user for their username if it's not cached locally.
+    First attempts to parse the 'origin' remote URL.
+    Falls back to local cache or user prompt.
     """
-    user_file = os.path.join(root_dir, ".github_user")
-    if os.path.exists(user_file):
-        with open(user_file, "r", encoding="utf-8") as f:
-            github_user = f.read().strip()
-    else:
-        github_user = input(
-            "Enter your GitHub username (for open source context): "
-        ).strip()
-        if github_user:
-            with open(user_file, "w", encoding="utf-8") as f:
-                f.write(github_user + "\n")
+    github_user = None
+    repo_name = None
 
-    repo_name = os.path.basename(root_dir)
+    try:
+        result = subprocess.run(
+            ["git", "config", "--get", "remote.origin.url"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        remote_url = result.stdout.strip()
+
+        # Match common GitHub remote formats:
+        # git@github.com:User/Repo.git or https://github.com/User/Repo.git
+        match = re.search(r"github\.com[:/]([^/]+)/([^/.]+)", remote_url)
+        if match:
+            github_user = match.group(1)
+            repo_name = match.group(2)
+    except subprocess.CalledProcessError:
+        pass
+
+    # Fallback to cached file or manual input if git remote fails
+    if not github_user:
+        user_file = os.path.join(root_dir, ".github_user")
+        if os.path.exists(user_file):
+            with open(user_file, "r", encoding="utf-8") as f:
+                github_user = f.read().strip()
+        else:
+            github_user = input(
+                "Enter your GitHub username (for open source context): "
+            ).strip()
+            if github_user:
+                with open(user_file, "w", encoding="utf-8") as f:
+                    f.write(github_user + "\n")
+
+    if not repo_name:
+        repo_name = os.path.basename(root_dir)
+
     return github_user, repo_name
 
 

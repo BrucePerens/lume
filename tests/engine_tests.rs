@@ -178,3 +178,93 @@ async fn test_concurrent_storage_and_wal() {
 
     let _ = std::fs::remove_dir_all(&test_dir);
 }
+
+#[tokio::test]
+async fn test_corruption_detection_magic_bytes() {
+    let test_dir = std::env::temp_dir().join(format!("lume_test_magic_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::remove_dir_all(&test_dir);
+    let engine = LumeEngine::new(test_dir.clone()).unwrap();
+    LumeEngine::init_db(&engine.db).unwrap();
+    let acl_id = engine.register_user("user", "pass").unwrap();
+
+    let msg_id = "msg_magic";
+    let path = engine
+        .store_email(msg_id, acl_id, b"payload")
+        .await
+        .unwrap();
+
+    // Overwrite the first 4 bytes (LMAI magic)
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+    file.write_all(b"BAD!").unwrap();
+    file.sync_all().unwrap();
+
+    let res = engine.get_email(msg_id).await;
+    assert!(matches!(res, Err(LumeError::Corruption)));
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+#[tokio::test]
+async fn test_corruption_detection_payload_checksum() {
+    let test_dir = std::env::temp_dir().join(format!("lume_test_chk_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::remove_dir_all(&test_dir);
+    let engine = LumeEngine::new(test_dir.clone()).unwrap();
+    LumeEngine::init_db(&engine.db).unwrap();
+    let acl_id = engine.register_user("user", "pass").unwrap();
+
+    let msg_id = "msg_chk";
+    let path = engine
+        .store_email(msg_id, acl_id, b"sensitive data payload")
+        .await
+        .unwrap();
+
+    // Append a single byte to the end of the file to corrupt the checksum
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .append(true)
+        .open(&path)
+        .unwrap();
+    file.write_all(b"x").unwrap();
+    file.sync_all().unwrap();
+
+    let res = engine.get_email(msg_id).await;
+    assert!(matches!(res, Err(LumeError::Corruption)));
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+#[tokio::test]
+async fn test_empty_payload_storage() {
+    let test_dir = std::env::temp_dir().join(format!("lume_test_empty_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::remove_dir_all(&test_dir);
+    let engine = LumeEngine::new(test_dir.clone()).unwrap();
+    LumeEngine::init_db(&engine.db).unwrap();
+    let acl_id = engine.register_user("user", "pass").unwrap();
+
+    let msg_id = "msg_empty";
+    engine.store_email(msg_id, acl_id, b"").await.unwrap();
+
+    let retrieved = engine.get_email(msg_id).await.unwrap();
+    assert_eq!(retrieved.len(), 0);
+
+    let _ = std::fs::remove_dir_all(&test_dir);
+}
+
+#[test]
+fn test_security_primitives() {
+    let pass = "complex_passphrase_123";
+    let hash = lume::security::hash_password(pass).unwrap();
+    assert!(lume::security::verify_password(pass, &hash).unwrap());
+    assert!(!lume::security::verify_password("wrong", &hash).unwrap());
+}
+
+#[tokio::test]
+async fn test_compression_efficiency_tracker() {
+    let manager = lume::compression::CompressionManager::new();
+    for _ in 0..100 {
+        let data = b"repeated data repeated data repeated data repeated data";
+        let _ = manager.compress(data).unwrap();
+    }
+}

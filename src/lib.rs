@@ -1,3 +1,10 @@
+//! # Lume Core Library
+//!
+//! The Lume Engine is a secure, failure-resistant local MTA storage engine.
+//! It provides strong atomic storage, Zstandard dictionary compression, and
+//! embedded SQLite indexing for metadata.
+
+pub mod api;
 pub mod compression;
 pub mod index;
 pub mod mime_parser;
@@ -7,6 +14,7 @@ pub mod storage;
 use std::path::PathBuf;
 use thiserror::Error;
 
+/// Represents all possible errors that can occur within the Lume Engine.
 #[derive(Error, Debug)]
 pub enum LumeError {
     #[error("I/O Error: {0}")]
@@ -25,14 +33,23 @@ pub enum LumeError {
     Security(String),
 }
 
+/// The core engine struct coordinating storage, compression, and indexing.
 pub struct LumeEngine {
+    /// The root directory where `.lmail` payload files are securely stored.
     pub storage_root: PathBuf,
+    /// Thread-safe connection to the local SQLite indexing database.
     pub db: std::sync::Mutex<rusqlite::Connection>,
+    /// The current Zstandard dictionary ID used for compressing new messages.
     pub active_dict_version: u32,
+    /// The manager responsible for compressing and decompressing payloads.
     pub compression_manager: compression::CompressionManager,
 }
 
 impl LumeEngine {
+    /// Initializes a new instance of the Lume Engine.
+    ///
+    /// This creates the necessary storage directories and initializes the SQLite
+    /// database connection with Write-Ahead Logging (WAL) enabled for high concurrency.
     pub fn new(root: PathBuf) -> Result<Self, LumeError> {
         std::fs::create_dir_all(&root)?;
         let db_path = root.join("lume_meta.sqlite");

@@ -1,3 +1,8 @@
+//! # Security Module
+//!
+//! Contains cryptographic primitives for user authentication and OS-level sandboxing
+//! utilities to restrict process execution.
+
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
     Argon2,
