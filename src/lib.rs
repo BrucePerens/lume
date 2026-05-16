@@ -34,6 +34,7 @@ pub enum LumeError {
 }
 
 /// The core engine struct coordinating storage, compression, and indexing.
+#[derive(Debug)]
 pub struct LumeEngine {
     /// The root directory where `.lmail` payload files are securely stored.
     pub storage_root: PathBuf,

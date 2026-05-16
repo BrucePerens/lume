@@ -11,7 +11,7 @@ It is a standalone, authoritative guide. For example: gemini.google.com and jule
 * **The Meta-Editing Trap (Summarization Bias):** You are strictly FORBIDDEN from summarizing or removing any existing rule, guardrail, or bullet point unless explicitly instructed by the user to delete that specific concept.
 * **System Prompt Overrides & Disambiguation:** When your system prompt fundamentally conflicts with the instructions in this repository, you MUST STOP and ask the human developer to help disambiguate the issue by requesting a "SYSTEM OVERRIDE:".
 * **The Continuous Learning Mandate:** Document novel failure modes, `rustc` traps, or `clippy` edge cases in `docs/LLM_EXPERIENCE.md`.
-* **Certainty Policy:** You MUST ask for clarification if you lack context or do not know a path, trait bound, or lifetime signature with 100% certainty. Provide code only when you possess full situational awareness.
+* **Certainty Policy (The Registry Extraction Protocol):** You MUST NOT guess or hallucinate APIs, trait bounds, struct fields, or enum variants for third-party crates. If you do not know an API with 100% certainty, DO NOT thrash the compiler with trial-and-error guessing. Instead, you MUST write and execute a short Python or Bash diagnostic script to search `~/.cargo/registry/src/` and extract the exact signatures or definitions directly from the downloaded crate source. Only proceed with generating Rust code once you have extracted and verified the exact API.
 * **Architectural Adherence Policy:** You MUST respect the architectural intent of `rustc` and `cargo clippy`. Fix the underlying logic of triggered rules rather than silencing them.
 * **Guardrail Preservation Mandate:** You MUST NEVER remove linter bypass attributes (e.g., `#[allow(clippy::...)]`), safety comments (`// SAFETY:`), semantic anchors (`// [@ANCHOR: ...]`), or any other code-correctness facility unless explicitly directed.
 </persona_and_boundaries>
@@ -102,6 +102,7 @@ It is a standalone, authoritative guide. For example: gemini.google.com and jule
 
 ### B. jules.google.com interface:
 * **Context:** Use FileFetcher to get any necessary files.
+* **Anti-Thrashing / API Discovery:** If you encounter unknown third-party APIs (e.g., specific samotop or axum trait bounds), DO NOT guess and push broken PRs to let the CI fail. Use bash or python to grep/cat the local `~/.cargo/registry/src/` to read the actual struct/trait definitions before writing the code.
 * **Testing:** Tests must correspond to the production environment as much as possible. Do not create file names or other features that are specific to tests. Use the exact ones used in the production environment. DO NOT EVER CREATE TEST-SPECIFIC FEATURES. USE THE SAME ONES USED IN PRODUCTION. THIS IS A MANDATORY RULE. DO NOT VIOLATE IT.
 * **Completion:** Upon completion of a task, produce a PR. Don't wait for the user to authorize you to finish, go straight to the PR, and if the user then wants changes, make them and produce another PR. Jules uses "the submit tool" to submit a PR.
 </per_agent_instructions>
