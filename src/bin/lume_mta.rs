@@ -56,6 +56,7 @@ struct Config {
 struct LumeMta {
     config: Arc<Config>,
     engine: Arc<LumeEngine>,
+    tokio_handle: tokio::runtime::Handle,
 }
 
 // ---------------------------------------------------------
@@ -69,6 +70,7 @@ struct LumeSink {
     message_id: String,
     acl_id: u64,
     rejected: bool,
+    tokio_handle: tokio::runtime::Handle,
 }
 
 impl AsyncWrite for LumeSink {
@@ -108,8 +110,11 @@ impl AsyncWrite for LumeSink {
 
         // Execute the async store operation synchronously to guarantee
         // atomic disk writes before the TCP session closes.
-        tokio::task::block_in_place(move || {
-            tokio::runtime::Handle::current().block_on(async move {
+        let handle = self.tokio_handle.clone();
+        // Bridge the runtimes: Spawn a standard OS thread to execute the Tokio async code,
+        // completely protecting the async-std worker from panics or starvation.
+        std::thread::spawn(move || {
+            handle.block_on(async move {
                 if let Ok(_path) = engine.store_email(&msg_id, acl_id, &buffer).await {
                     let header = lume::storage::MailHeader {
                         dict_id: engine.compression_manager.get_active_dict_id(),
@@ -125,7 +130,9 @@ impl AsyncWrite for LumeSink {
                     );
                 }
             });
-        });
+        })
+        .join()
+        .expect("Tokio bridge thread panicked");
 
         Poll::Ready(Ok(()))
     }
@@ -139,8 +146,17 @@ impl AsyncWrite for LumeSink {
 // ---------------------------------------------------------
 
 impl MailSetup<Configuration> for LumeMta {
-    fn setup(self, _config: &mut Configuration) {
-        // We will wire the guard and dispatcher into `_config` once we know its fields.
+    fn setup(self, config: &mut Configuration) {
+        use samotop::mail::{AcceptsDispatch, AcceptsGuard};
+
+        let guard_instance = LumeMta {
+            config: self.config.clone(),
+            engine: self.engine.clone(),
+            tokio_handle: self.tokio_handle.clone(),
+        };
+
+        config.add_last_guard(guard_instance);
+        config.add_last_dispatch(self);
     }
 }
 
@@ -159,19 +175,37 @@ impl MailGuard for LumeMta {
     fn add_recipient<'a, 's, 'f>(
         &'a self,
         _session: &'s mut SmtpSession,
-        _recipient: Recipient,
+        recipient: Recipient,
     ) -> Pin<Box<dyn Future<Output = AddRecipientResult> + Send + Sync + 'f>>
     where
         'a: 'f,
         's: 'f,
     {
-        // DIAGNOSTIC: Unconditionally reject ALL recipients.
-        // If the unauthorized test still receives a '250 Ok', Samotop is bypassing this guard entirely.
         Box::pin(async move {
-            AddRecipientResult::Failed(
-                AddRecipientFailure::RejectedPermanently,
-                "554 5.7.1 Relay access denied".to_string(),
-            )
+            let rcpt_addr = recipient.address.to_string();
+            let mut is_accepted = false;
+
+            // Real Relay Protection Logic
+            if let Some(domain) = rcpt_addr.split('@').last() {
+                let clean_domain = domain.trim_matches(|c| c == '>' || c == '<');
+                for host_regex in &self.config.server.accepted_hosts {
+                    if let Ok(re) = regex::Regex::new(host_regex) {
+                        if re.is_match(clean_domain) {
+                            is_accepted = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if is_accepted {
+                AddRecipientResult::Inconclusive(recipient)
+            } else {
+                AddRecipientResult::Failed(
+                    AddRecipientFailure::RejectedPermanently,
+                    "Relay access denied".to_string(),
+                )
+            }
         })
     }
 }
@@ -189,6 +223,8 @@ impl MailDispatch for LumeMta {
         let acl_id = self.config.lume.default_acl_id;
         let message_id = session.transaction.id.clone();
 
+        let tokio_handle = self.tokio_handle.clone();
+
         Box::pin(async move {
             let sink = LumeSink {
                 buffer: Vec::new(),
@@ -196,6 +232,7 @@ impl MailDispatch for LumeMta {
                 message_id,
                 acl_id,
                 rejected: false,
+                tokio_handle,
             };
             session.transaction.sink = Some(Box::pin(sink));
             Ok(())
@@ -224,6 +261,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mta = LumeMta {
         config: config_arc.clone(),
         engine: engine_arc.clone(),
+        tokio_handle: tokio::runtime::Handle::current(),
     };
 
     let bind_addr = &config_arc.server.bind_addr;
