@@ -49,7 +49,7 @@ impl CompressionManager {
 
     pub fn decompress(&self, compressed_data: &[u8], dict_id: u32) -> Result<Vec<u8>, LumeError> {
         // If a dictionary exists, we would use it here. For the fallback, use standard decode.
-        if self.decoders.get(&dict_id).is_some() {
+        if self.decoders.contains_key(&dict_id) {
             // Note: In a production iteration, we would use zstd::stream::Decoder::with_dictionary
             decode_all(compressed_data).map_err(|e| LumeError::Compression(e.to_string()))
         } else {
