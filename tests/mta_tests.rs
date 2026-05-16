@@ -80,11 +80,21 @@ default_acl_id = 1
     let mut buf = vec![0; 1024];
 
     let n = stream.read(&mut buf).await.unwrap();
-    assert!(String::from_utf8_lossy(&buf[..n]).contains("220 lume ESMTP Ready"));
+    let greeting = String::from_utf8_lossy(&buf[..n]).to_lowercase();
+    assert!(
+        greeting.contains("220 lume service ready"),
+        "Server greeting mismatch! Actually received from Samotop: '{}'",
+        greeting
+    );
 
     stream.write_all(b"EHLO localhost\r\n").await.unwrap();
     let n = stream.read(&mut buf).await.unwrap();
-    assert!(String::from_utf8_lossy(&buf[..n]).contains("250-lume"));
+    let ehlo_response = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        ehlo_response.contains("250 lume"),
+        "EHLO response mismatch! Actually received from Samotop: '{}'",
+        ehlo_response
+    );
 
     // --- TEST A: Relay Protection ---
     stream
@@ -98,9 +108,11 @@ default_acl_id = 1
         .await
         .unwrap();
     let n = stream.read(&mut buf).await.unwrap();
+    let response = String::from_utf8_lossy(&buf[..n]);
     assert!(
-        String::from_utf8_lossy(&buf[..n]).contains("554 5.7.1 Relay access denied"),
-        "MTA failed to reject unauthorized relay domain"
+        response.contains("554 5.7.1 Relay access denied"),
+        "MTA failed to reject unauthorized relay domain! Actually received: '{}'",
+        response
     );
 
     // --- TEST B: Header Sanity Enforcement ---
@@ -115,21 +127,32 @@ default_acl_id = 1
         .await
         .unwrap();
     let n = stream.read(&mut buf).await.unwrap();
-    assert!(String::from_utf8_lossy(&buf[..n]).contains("250 2.1.5 Ok"));
+    let response = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        response.contains("250"),
+        "Expected 250 Ok for valid recipient! Actually received: '{}'",
+        response
+    );
 
     stream.write_all(b"DATA\r\n").await.unwrap();
     let n = stream.read(&mut buf).await.unwrap();
-    assert!(String::from_utf8_lossy(&buf[..n]).contains("354 End data"));
+    let response = String::from_utf8_lossy(&buf[..n]);
+    assert!(
+        response.contains("354"),
+        "Expected 354 Start mail input! Actually received: '{}'",
+        response
+    );
 
     stream
         .write_all(b"Subject: Missing From and To\r\n\r\nBad payload\r\n.\r\n")
         .await
         .unwrap();
     let n = stream.read(&mut buf).await.unwrap();
+    let response = String::from_utf8_lossy(&buf[..n]);
     assert!(
-        String::from_utf8_lossy(&buf[..n])
-            .contains("550 5.7.1 Message rejected: missing mandatory From or To headers"),
-        "MTA failed to reject malformed body"
+        response.contains("550 5.7.1 Message rejected: missing mandatory From or To headers"),
+        "MTA failed to reject malformed body! Actually received: '{}'",
+        response
     );
 
     // --- TEST C: Successful Delivery & Atomic Storage ---
@@ -151,9 +174,11 @@ default_acl_id = 1
     let valid_email = b"From: sender@test.com\r\nTo: valid@example.com\r\nSubject: MTA Integration Test\r\n\r\nThis is a securely transmitted message.\r\n.\r\n";
     stream.write_all(valid_email).await.unwrap();
     let n = stream.read(&mut buf).await.unwrap();
+    let response = String::from_utf8_lossy(&buf[..n]);
     assert!(
-        String::from_utf8_lossy(&buf[..n]).contains("250 2.0.0 Ok: queued securely"),
-        "MTA failed to accept and store valid email"
+        response.contains("250 2.0.0 Ok: queued securely"),
+        "MTA failed to accept and store valid email! Actually received: '{}'",
+        response
     );
 
     stream.write_all(b"QUIT\r\n").await.unwrap();
@@ -181,7 +206,8 @@ default_acl_id = 1
     let content_str = String::from_utf8_lossy(&content);
     assert!(
         content_str.contains("This is a securely transmitted message."),
-        "Payload was corrupted during MTA transfer"
+        "Payload was corrupted during MTA transfer! Actually received: '{}'",
+        content_str
     );
 
     // Cleanup

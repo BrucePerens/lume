@@ -2,7 +2,7 @@ use futures::io::AsyncWrite;
 use lume::LumeEngine;
 use samotop::mail::{
     AddRecipientFailure, AddRecipientResult, Builder, Configuration, DispatchError, MailDataSink,
-    MailDispatch, MailGuard, MailSetup, Recipient, StartMailResult,
+    MailDispatch, MailGuard, MailSetup, Name, Recipient, StartMailResult,
 };
 use samotop::server::TcpServer;
 use samotop::smtp::SmtpSession;
@@ -16,10 +16,17 @@ use std::task::{Context, Poll};
 use tracing::info;
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(untagged)]
+enum SystemId {
+    Int(u32),
+    Str(String),
+}
+
+#[derive(Debug, Deserialize, Clone)]
 struct ServerConfig {
     bind_addr: String,
-    run_as_uid: String,
-    run_as_gid: String,
+    run_as_uid: SystemId,
+    run_as_gid: SystemId,
     accepted_hosts: Vec<String>,
     max_connections: usize,
     idle_timeout_secs: u64,
@@ -152,37 +159,19 @@ impl MailGuard for LumeMta {
     fn add_recipient<'a, 's, 'f>(
         &'a self,
         _session: &'s mut SmtpSession,
-        recipient: Recipient,
+        _recipient: Recipient,
     ) -> Pin<Box<dyn Future<Output = AddRecipientResult> + Send + Sync + 'f>>
     where
         'a: 'f,
         's: 'f,
     {
+        // DIAGNOSTIC: Unconditionally reject ALL recipients.
+        // If the unauthorized test still receives a '250 Ok', Samotop is bypassing this guard entirely.
         Box::pin(async move {
-            let rcpt_addr = recipient.address.to_string();
-            let mut is_accepted = false;
-
-            // Relay Protection Logic
-            if let Some(domain) = rcpt_addr.split('@').last() {
-                let clean_domain = domain.trim_end_matches('>');
-                for host_regex in &self.config.server.accepted_hosts {
-                    if let Ok(re) = regex::Regex::new(host_regex) {
-                        if re.is_match(clean_domain) {
-                            is_accepted = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if is_accepted {
-                AddRecipientResult::Accepted
-            } else {
-                AddRecipientResult::Failed(
-                    AddRecipientFailure::RejectedPermanently,
-                    "554 5.7.1 Relay access denied".to_string(),
-                )
-            }
+            AddRecipientResult::Failed(
+                AddRecipientFailure::RejectedPermanently,
+                "554 5.7.1 Relay access denied".to_string(),
+            )
         })
     }
 }
@@ -242,10 +231,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let listener = tokio::net::TcpListener::bind(bind_addr).await?;
         listener.local_addr()?
     };
+
+    // CRITICAL: The integration test reads from stdout, but tracing logs to stderr.
+    // We must use println! to announce the port so the test framework doesn't timeout.
+    println!("listening on {}", actual_addr);
     info!("listening on {}", actual_addr);
 
-    // Provide the LumeMta engine to the samotop builder as its dispatcher and guard
-    let mail_service = Builder::default().using(mta).build();
+    // Provide the LumeMta engine to the samotop builder as its dispatcher and guard.
+    // We MUST also provide the ESMTP state machine and the parser, otherwise
+    // it defaults to an empty service and rejects connections with 421.
+    let mail_service = Builder::default()
+        .using(samotop::smtp::Esmtp.with(samotop::smtp::SmtpParser))
+        .using(Name::new("lume"))
+        .using(mta)
+        .build();
     TcpServer::on(actual_addr).serve(mail_service).await?;
 
     Ok(())

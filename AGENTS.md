@@ -118,3 +118,8 @@ It is a standalone, authoritative guide. For example: gemini.google.com and jule
 * [ ] **Linter Bypass:** If `#[allow(clippy::...)]` was absolutely necessary, is there an exhaustive test proving safety?
 * [ ] **Anchor Preservation:** Pre-existing anchors preserved and correctly placed?
 </definition_of_done>
+
+### String Testing Protocol
+**CRITICAL:** All string assertions (e.g., matching network responses, `.contains()` checks) MUST emit the actual received string upon failure.
+Never use a bare `assert!(foo.contains(bar))`.
+Always provide a custom panic message: `assert!(foo.contains(bar), "Mismatch! Actually received: '{}'", foo);`.

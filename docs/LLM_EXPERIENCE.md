@@ -10,9 +10,18 @@ During the development of the `lume_mta` binary, it became clear that trial-and-
 ## 2. Samotop v0.13.2 Architectural Specifics
 The `samotop` v0.13.2 crate utilizes a highly specific, heavily lifetime-bound asynchronous architecture.
 
-### A. Server Initialization
+### A. Server Initialization & The Empty Builder Trap
 * **Struct:** The correct struct for binding the server is `samotop::server::TcpServer` (not `Server`).
-* **Builder:** The `Builder::default()` uses the `.using(setup)` method to bind implementations, not `.with()`.
+* **Builder:** The `Builder::default()` uses the `.using(setup)` method to bind implementations.
+* **CRITICAL TRAP:** `Builder::default()` creates a literally *empty* configuration. It contains no state machine (`SessionService`) and no SMTP parser (`Interpret`). If you bind a server with an empty builder and only add a `MailGuard`, the server will accept TCP connections but instantly reject them with a `421 Service not available` banner because it doesn't know how to parse or handle the session.
+* **The Fix:** You must explicitly inject the default ESMTP parser and state machine into the builder alongside your custom Guard/Dispatcher.
+  ```rust
+  let mail_service = Builder::default()
+      .using(samotop::smtp::Esmtp.with(samotop::smtp::SmtpParser)) // Injects state machine & parser
+      .using(Name::new("lume")) // Sets the server greeting name
+      .using(mta) // Injects your custom MailGuard and MailDispatch
+      .build();
+  ```
 
 ### B. The `Configuration` Wiring
 To intercept emails, you must implement `MailSetup<Configuration>`.
