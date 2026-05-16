@@ -33,7 +33,7 @@ pub fn build_router(engine: LumeEngine) -> Router {
 
     Router::new()
         .route("/mail", post(store_mail))
-        .route("/mail/:message_id", get(retrieve_mail))
+        .route("/mail/{message_id}", get(retrieve_mail))
         .layer(SetResponseHeaderLayer::overriding(
             header::X_CONTENT_TYPE_OPTIONS,
             header::HeaderValue::from_static("nosniff"),

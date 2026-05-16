@@ -55,6 +55,7 @@ impl crate::LumeEngine {
             let mut file = OpenOptions::new()
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&tmp_path)
                 .await?;
 

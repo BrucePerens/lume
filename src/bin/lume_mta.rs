@@ -1,28 +1,26 @@
-use futures::io::AsyncWrite;
 use lume::LumeEngine;
 use samotop::mail::{
-    AddRecipientFailure, AddRecipientResult, Builder, Configuration, DispatchError, MailDataSink,
-    MailDispatch, MailGuard, MailSetup, Name, Recipient, StartMailResult,
+    AddRecipientFailure, AddRecipientResult, Builder, Configuration, DispatchError, MailDispatch,
+    MailGuard, Name, Recipient, StartMailResult,
 };
 use samotop::server::TcpServer;
 use samotop::smtp::SmtpSession;
 use serde::Deserialize;
-use std::env;
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
-use tracing::info;
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(untagged)]
+#[allow(dead_code)]
 enum SystemId {
     Int(u32),
     Str(String),
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 struct ServerConfig {
     bind_addr: String,
     run_as_uid: SystemId,
@@ -34,6 +32,7 @@ struct ServerConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 struct RspamdConfig {
     check_url: String,
     reject_spam: bool,
@@ -46,6 +45,7 @@ struct LumeConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[allow(dead_code)]
 struct Config {
     server: ServerConfig,
     rspamd: RspamdConfig,
@@ -128,7 +128,7 @@ impl MailGuard for LumeMta {
             let rcpt_addr = recipient.address.to_string();
             let mut is_accepted = false;
 
-            if let Some(domain) = rcpt_addr.split('@').last() {
+            if let Some(domain) = rcpt_addr.split('@').next_back() {
                 let clean_domain = domain.trim_matches(|c| c == '>' || c == '<');
                 for host_regex in &self.config.server.accepted_hosts {
                     if let Ok(re) = regex::Regex::new(host_regex) {
@@ -225,8 +225,7 @@ impl futures::io::AsyncWrite for LumeSink {
 
                     if self.worker_tx.try_send(task).is_err() {
                         self.state = SinkState::Done;
-                        return Poll::Ready(Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        return Poll::Ready(Err(std::io::Error::other(
                             "450 4.3.2 System heavily loaded, please try again",
                         )));
                     }
@@ -301,10 +300,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     );
                     Ok(())
                 } else {
-                    Err(std::io::Error::new(
-                        std::io::ErrorKind::Other,
-                        "Database storage failed",
-                    ))
+                    Err(std::io::Error::other("Database storage failed"))
                 }
             })
             .await;
@@ -337,7 +333,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("listening on {}", actual_addr);
     tracing::info!("listening on {}", actual_addr);
 
-    let mail_service = Builder::default()
+    let mail_service = Builder
         .using(samotop::smtp::Esmtp.with(samotop::smtp::SmtpParser))
         .using(Name::new("lume"))
         .using(mta)
