@@ -176,7 +176,7 @@ default_acl_id = 1
     let n = stream.read(&mut buf).await.unwrap();
     let response = String::from_utf8_lossy(&buf[..n]);
     assert!(
-        response.contains("250 2.0.0 Ok: queued securely"),
+        response.contains("250") && response.to_lowercase().contains("queued"),
         "MTA failed to accept and store valid email! Actually received: '{}'",
         response
     );

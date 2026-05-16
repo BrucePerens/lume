@@ -52,107 +52,50 @@ struct Config {
     lume: LumeConfig,
 }
 
-#[derive(Debug, Clone)]
+use tokio::sync::{mpsc, oneshot};
+
+pub struct MailTask {
+    pub message_id: String,
+    pub buffer: Vec<u8>,
+    pub acl_id: u64,
+    pub receipt: oneshot::Sender<std::io::Result<()>>,
+}
+
+enum SinkState {
+    Receiving,
+    WaitingForReceipt(oneshot::Receiver<std::io::Result<()>>),
+    Done,
+}
+
 struct LumeMta {
     config: Arc<Config>,
     engine: Arc<LumeEngine>,
-    tokio_handle: tokio::runtime::Handle,
+    worker_tx: mpsc::Sender<MailTask>,
 }
 
-// ---------------------------------------------------------
-// CUSTOM DATA SINK FOR PAYLOAD VERIFICATION & ATOMIC STORAGE
-// ---------------------------------------------------------
-
-#[derive(Clone)]
 struct LumeSink {
     buffer: Vec<u8>,
-    engine: Arc<LumeEngine>,
     message_id: String,
     acl_id: u64,
     rejected: bool,
-    tokio_handle: tokio::runtime::Handle,
+    state: SinkState,
+    worker_tx: mpsc::Sender<MailTask>,
 }
 
-impl AsyncWrite for LumeSink {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<std::io::Result<usize>> {
-        self.buffer.extend_from_slice(buf);
-        Poll::Ready(Ok(buf.len()))
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-        let content_str = String::from_utf8_lossy(&self.buffer);
-
-        // Header Sanity Enforcement
-        if !content_str.contains("From:") || !content_str.contains("To:") {
-            self.rejected = true;
-            return Poll::Ready(Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "550 5.7.1 Message rejected: missing mandatory From or To headers",
-            )));
-        }
-
-        if self.buffer.is_empty() {
-            return Poll::Ready(Ok(()));
-        }
-
-        let engine = self.engine.clone();
-        let msg_id = self.message_id.clone();
-        let acl_id = self.acl_id;
-        let buffer = std::mem::take(&mut self.buffer);
-
-        // Execute the async store operation synchronously to guarantee
-        // atomic disk writes before the TCP session closes.
-        let handle = self.tokio_handle.clone();
-        // Bridge the runtimes: Spawn a standard OS thread to execute the Tokio async code,
-        // completely protecting the async-std worker from panics or starvation.
-        std::thread::spawn(move || {
-            handle.block_on(async move {
-                if let Ok(_path) = engine.store_email(&msg_id, acl_id, &buffer).await {
-                    let header = lume::storage::MailHeader {
-                        dict_id: engine.compression_manager.get_active_dict_id(),
-                        acl_id,
-                        original_checksum: 0,
-                        text_len: 0,
-                    };
-                    let _ = engine.index_message(
-                        &msg_id,
-                        &header,
-                        "MTA Integration Test",
-                        "sender@test.com",
-                    );
-                }
-            });
-        })
-        .join()
-        .expect("Tokio bridge thread panicked");
-
-        Poll::Ready(Ok(()))
+impl std::fmt::Debug for LumeMta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LumeMta").finish()
     }
 }
 
-// `MailDataSink` is automatically implemented by `samotop` for any type
-// that implements `AsyncWrite + Send + Sync + 'static`.
-
-// ---------------------------------------------------------
-// MTA GUARD & DISPATCH IMPLEMENTATIONS
-// ---------------------------------------------------------
-
-impl MailSetup<Configuration> for LumeMta {
+impl samotop::mail::MailSetup<Configuration> for LumeMta {
     fn setup(self, config: &mut Configuration) {
         use samotop::mail::{AcceptsDispatch, AcceptsGuard};
 
         let guard_instance = LumeMta {
             config: self.config.clone(),
             engine: self.engine.clone(),
-            tokio_handle: self.tokio_handle.clone(),
+            worker_tx: self.worker_tx.clone(),
         };
 
         config.add_last_guard(guard_instance);
@@ -185,7 +128,6 @@ impl MailGuard for LumeMta {
             let rcpt_addr = recipient.address.to_string();
             let mut is_accepted = false;
 
-            // Real Relay Protection Logic
             if let Some(domain) = rcpt_addr.split('@').last() {
                 let clean_domain = domain.trim_matches(|c| c == '>' || c == '<');
                 for host_regex in &self.config.server.accepted_hosts {
@@ -219,20 +161,18 @@ impl MailDispatch for LumeMta {
         'a: 'f,
         's: 'f,
     {
-        let engine = self.engine.clone();
-        let acl_id = self.config.lume.default_acl_id;
         let message_id = session.transaction.id.clone();
-
-        let tokio_handle = self.tokio_handle.clone();
+        let acl_id = self.config.lume.default_acl_id;
+        let worker_tx = self.worker_tx.clone();
 
         Box::pin(async move {
             let sink = LumeSink {
                 buffer: Vec::new(),
-                engine,
                 message_id,
                 acl_id,
                 rejected: false,
-                tokio_handle,
+                state: SinkState::Receiving,
+                worker_tx,
             };
             session.transaction.sink = Some(Box::pin(sink));
             Ok(())
@@ -240,28 +180,152 @@ impl MailDispatch for LumeMta {
     }
 }
 
-// ---------------------------------------------------------
+impl futures::io::AsyncWrite for LumeSink {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.buffer.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        loop {
+            match &mut self.state {
+                SinkState::Receiving => {
+                    let content_str = String::from_utf8_lossy(&self.buffer);
+
+                    if !content_str.contains("From:") || !content_str.contains("To:") {
+                        self.rejected = true;
+                        self.state = SinkState::Done;
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "550 5.7.1 Message rejected: missing mandatory From or To headers",
+                        )));
+                    }
+
+                    if self.buffer.is_empty() {
+                        self.state = SinkState::Done;
+                        return Poll::Ready(Ok(()));
+                    }
+
+                    let (receipt_tx, receipt_rx) = oneshot::channel();
+
+                    let task = MailTask {
+                        message_id: self.message_id.clone(),
+                        buffer: std::mem::take(&mut self.buffer),
+                        acl_id: self.acl_id,
+                        receipt: receipt_tx,
+                    };
+
+                    if self.worker_tx.try_send(task).is_err() {
+                        self.state = SinkState::Done;
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "450 4.3.2 System heavily loaded, please try again",
+                        )));
+                    }
+
+                    self.state = SinkState::WaitingForReceipt(receipt_rx);
+                }
+                SinkState::WaitingForReceipt(rx) => match std::pin::Pin::new(rx).poll(cx) {
+                    Poll::Ready(Ok(Ok(()))) => {
+                        self.state = SinkState::Done;
+                        return Poll::Ready(Ok(()));
+                    }
+                    Poll::Ready(Ok(Err(e))) => {
+                        self.state = SinkState::Done;
+                        return Poll::Ready(Err(e));
+                    }
+                    Poll::Ready(Err(_)) => {
+                        self.state = SinkState::Done;
+                        return Poll::Ready(Err(std::io::Error::new(
+                            std::io::ErrorKind::BrokenPipe,
+                            "450 4.3.0 Internal storage worker failed",
+                        )));
+                    }
+                    Poll::Pending => return Poll::Pending,
+                },
+                SinkState::Done => return Poll::Ready(Ok(())),
+            }
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tracing_subscriber::fmt::init();
 
     let config_path =
-        env::var("LUME_MTA_CONFIG").unwrap_or_else(|_| "mta.example.toml".to_string());
-    info!("Loading config from {}", config_path);
+        std::env::var("LUME_MTA_CONFIG").unwrap_or_else(|_| "mta.example.toml".to_string());
+    tracing::info!("Loading config from {}", config_path);
     let config_data = std::fs::read_to_string(&config_path)?;
     let config: Config = toml::from_str(&config_data)?;
 
-    let engine = LumeEngine::new(PathBuf::from(&config.lume.data_dir))?;
+    let engine = LumeEngine::new(std::path::PathBuf::from(&config.lume.data_dir))?;
     LumeEngine::init_db(&engine.db)?;
 
-    let engine_arc = Arc::new(engine);
-    let config_arc = Arc::new(config);
+    let engine_arc = std::sync::Arc::new(engine);
+    let config_arc = std::sync::Arc::new(config);
+
+    // 1. Create the cross-runtime channel
+    let (worker_tx, mut worker_rx) = mpsc::channel::<MailTask>(1000);
+    let worker_engine = engine_arc.clone();
+
+    // 2. Spawn the Tokio Background Worker
+    tokio::spawn(async move {
+        while let Some(task) = worker_rx.recv().await {
+            let engine = worker_engine.clone();
+
+            let db_result = tokio::time::timeout(std::time::Duration::from_secs(10), async move {
+                if let Ok(_path) = engine
+                    .store_email(&task.message_id, task.acl_id, &task.buffer)
+                    .await
+                {
+                    let header = lume::storage::MailHeader {
+                        dict_id: engine.compression_manager.get_active_dict_id(),
+                        acl_id: task.acl_id,
+                        original_checksum: 0,
+                        text_len: 0,
+                    };
+                    let _ = engine.index_message(
+                        &task.message_id,
+                        &header,
+                        "MTA Integration Test",
+                        "sender@test.com",
+                    );
+                    Ok(())
+                } else {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        "Database storage failed",
+                    ))
+                }
+            })
+            .await;
+
+            let final_response = match db_result {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(e)) => Err(e),
+                Err(_) => Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "450 4.4.2 Storage timeout",
+                )),
+            };
+
+            let _ = task.receipt.send(final_response);
+        }
+    });
 
     let mta = LumeMta {
         config: config_arc.clone(),
         engine: engine_arc.clone(),
-        tokio_handle: tokio::runtime::Handle::current(),
+        worker_tx,
     };
 
     let bind_addr = &config_arc.server.bind_addr;
@@ -270,19 +334,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         listener.local_addr()?
     };
 
-    // CRITICAL: The integration test reads from stdout, but tracing logs to stderr.
-    // We must use println! to announce the port so the test framework doesn't timeout.
     println!("listening on {}", actual_addr);
-    info!("listening on {}", actual_addr);
+    tracing::info!("listening on {}", actual_addr);
 
-    // Provide the LumeMta engine to the samotop builder as its dispatcher and guard.
-    // We MUST also provide the ESMTP state machine and the parser, otherwise
-    // it defaults to an empty service and rejects connections with 421.
     let mail_service = Builder::default()
         .using(samotop::smtp::Esmtp.with(samotop::smtp::SmtpParser))
         .using(Name::new("lume"))
         .using(mta)
         .build();
+
     TcpServer::on(actual_addr).serve(mail_service).await?;
 
     Ok(())
